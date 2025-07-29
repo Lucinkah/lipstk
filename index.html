@@ -16,8 +16,8 @@
 <body class="flex flex-col items-center justify-center min-h-screen">
   <h1 class="title-text">The Perfect Red</h1>
   <video id="webcam" autoplay playsinline style="display: none;"></video>
-  <canvas id="output_canvas" width="640" height="480" class="rounded-lg shadow-lg mb-4"></canvas>
-  <canvas id="photo_canvas" width="640" height="480"></canvas>
+  <canvas id="output_canvas" width="1280" height="720" class="rounded-lg shadow-lg mb-4"></canvas>
+  <canvas id="photo_canvas" width="1280" height="720"></canvas>
   <div class="flex space-x-4 mb-4">
     <select id="lipstick_select" class="p-2 border rounded">
       <option value="">No Lipstick</option>
@@ -31,8 +31,8 @@
     <label>Brightness: <input id="brightness_slider" type="range" min="0" max="200" value="100" class="w-32"></label>
     <select id="background_select" class="p-2 border rounded">
       <option value="camera">Camera Background</option>
-      <option value="https://picsum.photos/640/480?blur=2">Dimly Lit Restaurant</option>
-      <option value="https://picsum.photos/640/480?bright">Bright Office</option>
+      <option value="https://images.pexels.com/photos/3771074/pexels-photo-3771074.jpeg?auto=compress&cs=tinysrgb&w=1280&h=720">Dimly Lit Restaurant</option>
+      <option value="https://images.pexels.com/photos/4439444/pexels-photo-4439444.jpeg?auto=compress&cs=tinysrgb&w=1280&h=720">Bright Office</option>
     </select>
     <button id="capture_button" class="bg-green-500 text-white px-4 py-2 rounded">Capture Photo</button>
   </div>
@@ -52,6 +52,8 @@
     let brightness = 1.0;
     let backgroundImage = null;
     let useCameraBg = true;
+    let lastSegmentationTime = 0;
+    const segmentationInterval = 100; // Run segmentation every 100ms
 
     // Lip landmarks indices (outer lips)
     const upperLip = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291];
@@ -59,20 +61,25 @@
     const claraBowUpperLip = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291];
 
     async function createModels() {
-      const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
-      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task` },
-        runningMode: "VIDEO", numFaces: 1
-      });
-      imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite" },
-        runningMode: "VIDEO", outputCategoryMask: true
-      });
+      try {
+        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+        faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task` },
+          runningMode: "VIDEO", numFaces: 1
+        });
+        imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite" },
+          runningMode: "VIDEO", outputCategoryMask: true
+        });
+      } catch (err) {
+        console.error("Model initialization failed:", err);
+        alert("Failed to load vision models. Please refresh and try again.");
+      }
     }
 
     async function enableCam() {
       try {
-        const constraints = { video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } };
+        const constraints = { video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } } };
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
         video.addEventListener("loadeddata", predictWebcam);
@@ -89,7 +96,11 @@
       canvasElement.height = video.videoHeight;
 
       let nowInMs = performance.now();
-      const segmentationResult = await imageSegmenter.segmentForVideo(video, nowInMs);
+      let segmentationResult = null;
+      if (nowInMs - lastSegmentationTime >= segmentationInterval) {
+        segmentationResult = await imageSegmenter.segmentForVideo(video, nowInMs);
+        lastSegmentationTime = nowInMs;
+      }
       const faceResult = await faceLandmarker.detectForVideo(video, nowInMs);
 
       applySegmentationAndEffects(segmentationResult, faceResult);
@@ -107,7 +118,7 @@
         canvasCtx.drawImage(backgroundImage, 0, 0, canvasElement.width, canvasElement.height);
       }
 
-      if (!useCameraBg && segmentationResult.categoryMask) {
+      if (!useCameraBg && segmentationResult && segmentationResult.categoryMask) {
         const mask = segmentationResult.categoryMask.getAsUint8Array();
         const tempCanvas = document.createElement('canvas');
         tempCanvas.width = canvasElement.width;
@@ -157,8 +168,11 @@
             if (idx === 40 || idx === 269) {
               adjustedY = y - 0.02;
             }
-            if (i === 0) canvasCtx.moveTo(x * canvasElement.width, adjustedY * canvasElement.height);
-            else canvasCtx.lineTo(x * canvasElement.width, adjustedY * canvasElement.height);
+            const px = x * canvasElement.width;
+            const py = adjustedY * canvasElement.height;
+            if (i === 0) canvasCtx.moveTo(px, py);
+            else if (i === 1) canvasCtx.quadraticCurveTo(px, py, px, py);
+            else canvasCtx.quadraticCurveTo((px + landmarks[claraBowUpperLip[i-1]].x * canvasElement.width)/2, (py + landmarks[claraBowUpperLip[i-1]].y * canvasElement.height)/2, px, py);
           });
           canvasCtx.closePath();
           canvasCtx.fill();
@@ -166,8 +180,11 @@
           canvasCtx.beginPath();
           lowerLip.forEach((idx, i) => {
             const {x, y} = landmarks[idx];
-            if (i === 0) canvasCtx.moveTo(x * canvasElement.width, y * canvasElement.height);
-            else canvasCtx.lineTo(x * canvasElement.width, y * canvasElement.height);
+            const px = x * canvasElement.width;
+            const py = y * canvasElement.height;
+            if (i === 0) canvasCtx.moveTo(px, py);
+            else if (i === 1) canvasCtx.quadraticCurveTo(px, py, px, py);
+            else canvasCtx.quadraticCurveTo((px + landmarks[lowerLip[i-1]].x * canvasElement.width)/2, (py + landmarks[lowerLip[i-1]].y * canvasElement.height)/2, px, py);
           });
           canvasCtx.closePath();
           canvasCtx.fill();
@@ -176,8 +193,11 @@
           canvasCtx.beginPath();
           upperLip.forEach((idx, i) => {
             const {x, y} = landmarks[idx];
-            if (i === 0) canvasCtx.moveTo(x * canvasElement.width, y * canvasElement.height);
-            else canvasCtx.lineTo(x * canvasElement.width, y * canvasElement.height);
+            const px = x * canvasElement.width;
+            const py = y * canvasElement.height;
+            if (i === 0) canvasCtx.moveTo(px, py);
+            else if (i === 1) canvasCtx.quadraticCurveTo(px, py, px, py);
+            else canvasCtx.quadraticCurveTo((px + landmarks[upperLip[i-1]].x * canvasElement.width)/2, (py + landmarks[upperLip[i-1]].y * canvasElement.height)/2, px, py);
           });
           canvasCtx.closePath();
           canvasCtx.fill();
@@ -185,8 +205,11 @@
           canvasCtx.beginPath();
           lowerLip.forEach((idx, i) => {
             const {x, y} = landmarks[idx];
-            if (i === 0) canvasCtx.moveTo(x * canvasElement.width, y * canvasElement.height);
-            else canvasCtx.lineTo(x * canvasElement.width, y * canvasElement.height);
+            const px = x * canvasElement.width;
+            const py = y * canvasElement.height;
+            if (i === 0) canvasCtx.moveTo(px, py);
+            else if (i === 1) canvasCtx.quadraticCurveTo(px, py, px, py);
+            else canvasCtx.quadraticCurveTo((px + landmarks[lowerLip[i-1]].x * canvasElement.width)/2, (py + landmarks[lowerLip[i-1]].y * canvasElement.height)/2, px, py);
           });
           canvasCtx.closePath();
           canvasCtx.fill();
@@ -212,12 +235,20 @@
     backgroundSelect.addEventListener("change", (e) => {
       if (e.target.value === "camera") {
         useCameraBg = true;
+        backgroundImage = null;
       } else {
         useCameraBg = false;
         backgroundImage = new Image();
         backgroundImage.crossOrigin = "anonymous";
         backgroundImage.src = e.target.value;
-        backgroundImage.onload = () => {};
+        backgroundImage.onload = () => {
+          console.log("Background loaded:", e.target.value);
+        };
+        backgroundImage.onerror = () => {
+          console.error("Failed to load background:", e.target.value);
+          useCameraBg = true;
+          alert("Failed to load background image. Reverting to camera.");
+        };
       }
     });
     captureButton.addEventListener("click", capturePhoto);
